@@ -16,7 +16,8 @@ jobs:
 
     defaults:
       run:
-        working-directory: personal-productivity-manager v3/android-app
+        shell: bash
+        working-directory: "personal-productivity-manager v3/android-app"
 
     steps:
       - name: Checkout repository
@@ -30,6 +31,14 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: latest
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -46,5 +55,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: personal-productivity-manager-v3-debug-apk
-          path: personal-productivity-manager v3/android-app/app/build/outputs/apk/debug/*.apk
+          path: "personal-productivity-manager v3/android-app/app/build/outputs/apk/debug/*.apk"
           if-no-files-found: error
