@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Momentum</title>
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  :root{--bg:#f7f8fc;--card:#fff;--ink:#1a1c24;--mute:#5a5f70;--pri:#4f5bd5;--red:#e5484d;--green:#2ead6b;--line:#e3e5ee}
+  @media (prefers-color-scheme:dark){:root{--bg:#0f1117;--card:#171a22;--ink:#e6e8f0;--mute:#a3a8ba;--pri:#9aa3ff;--line:#2a2e3b}}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,sans-serif}
+  main{max-width:640px;margin:0 auto;padding:16px}
+  h1{font-size:24px;margin:8px 0}
+  .card{background:var(--card);border-radius:14px;padding:10px 14px;margin:8px 0;display:flex;gap:10px;align-items:center;border:1px solid var(--line)}
+  .card.done .t{text-decoration:line-through;color:var(--mute)}
+  .t{flex:1;word-break:break-word}.due{font-size:12px;color:var(--mute)}.late{color:var(--red)}
+  input,select,button{font:inherit;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+  button.p{background:var(--pri);color:#fff;border:0}button.x{border:0;background:none;color:var(--mute);cursor:pointer}
+  form{display:flex;gap:8px;flex-wrap:wrap}form input[type=text]{flex:1;min-width:160px}
+  .tabs{display:flex;gap:8px;margin:12px 0}.tabs button.on{background:var(--pri);color:#fff;border:0}
+  #msg{color:var(--mute);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Momentum</h1>
+  <div id="login" hidden><p>Sign in with the same Google account you use in the app.</p><div id="gbtn"></div><p id="msg"></p></div>
+  <div id="app" hidden>
+    <form id="add"><input type="text" id="title" placeholder="New task" required maxlength="500"><input type="datetime-local" id="due"><button class="p">Add</button></form>
+    <div class="tabs"><button data-f="today" class="on">Today</button><button data-f="open">All open</button><button data-f="done">Completed</button><button id="out" style="margin-left:auto">Sign out</button></div>
+    <div id="list"></div>
+  </div>
+</main>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+const $ = s => document.querySelector(s);
+let token = localStorage.getItem("momentum_token"), tasks = new Map(), filter = "today";
+const uid = () => crypto.randomUUID();
+
+async function api(path, body) {
+  const r = await fetch(path, {method: body ? "POST" : "GET", headers: {"Content-Type": "application/json", ...(token ? {Authorization: "Bearer " + token} : {})}, body: body ? JSON.stringify(body) : undefined});
+  if (r.status === 401) { signOut(); throw new Error("Session expired"); }
+  if (!r.ok) throw new Error((await r.text()).slice(0, 200));
+  return r.json();
+}
+async function sync(changed = []) {
+  const res = await api("/sync", {since: 0, tasks: changed});
+  tasks = new Map(res.tasks.filter(t => !t.deletedAt).map(t => [t.id, t]));
+  render();
+}
+function signOut() { localStorage.removeItem("momentum_token"); token = null; show(); }
+function show() { $("#login").hidden = !!token; $("#app").hidden = !token; if (token) sync().catch(e => $("#msg").textContent = e.message); }
+function overdue(t) { return ["UPCOMING","IN_PROGRESS"].includes(t.status) && t.dueAt && t.dueAt < Date.now(); }
+function sameDay(ms) { return new Date(ms).toDateString() === new Date().toDateString(); }
+function render() {
+  const rows = [...tasks.values()].filter(t => filter === "done" ? t.status === "COMPLETED"
+      : ["UPCOMING","IN_PROGRESS"].includes(t.status) && (filter === "open" || overdue(t) || (t.dueAt && sameDay(t.dueAt))))
+    .sort((a, b) => (a.dueAt ?? 9e15) - (b.dueAt ?? 9e15));
+  $("#list").replaceChildren(...rows.map(t => {
+    const el = document.createElement("div"); el.className = "card" + (t.status === "COMPLETED" ? " done" : "");
+    const cb = Object.assign(document.createElement("input"), {type: "checkbox", checked: t.status === "COMPLETED"});
+    cb.onchange = () => update(t, {status: cb.checked ? "COMPLETED" : "UPCOMING", completedAt: cb.checked ? Date.now() : null});
+    const box = document.createElement("div"); box.className = "t"; box.textContent = t.title;
+    if (t.dueAt) { const d = document.createElement("div"); d.className = "due" + (overdue(t) ? " late" : ""); d.textContent = new Date(t.dueAt).toLocaleString(); box.append(d); }
+    const del = Object.assign(document.createElement("button"), {className: "x", textContent: "✕", title: "Delete"});
+    del.onclick = () => update(t, {deletedAt: Date.now()});
+    el.append(cb, box, del); return el;
+  }));
+  if (!rows.length) $("#list").textContent = "Nothing here.";
+}
+function update(t, patch) {
+  const now = Date.now(); const nt = {...t, ...patch, updatedAt: now};
+  // NOTE: completing a recurring task here does not create the next occurrence (the app and WhatsApp do).
+  sync([nt]).catch(e => alert(e.message));
+}
+$("#add").onsubmit = e => {
+  e.preventDefault(); const now = Date.now(), d = $("#due").value;
+  sync([{id: uid(), title: $("#title").value.trim(), createdAt: now, updatedAt: now, dueAt: d ? new Date(d).getTime() : null}]).catch(err => alert(err.message));
+  e.target.reset();
+};
+document.querySelectorAll(".tabs [data-f]").forEach(b => b.onclick = () => { filter = b.dataset.f; document.querySelectorAll(".tabs [data-f]").forEach(x => x.classList.toggle("on", x === b)); render(); });
+$("#out").onclick = signOut;
+
+window.onload = async () => {
+  if (!token) {
+    const cfg = await (await fetch("/config")).json();
+    if (!cfg.googleClientId) { $("#msg").textContent = "Google sign-in is not configured on this server."; }
+    else {
+      const wait = setInterval(() => { if (window.google) { clearInterval(wait);
+        google.accounts.id.initialize({client_id: cfg.googleClientId, callback: async r => {
+          try { const a = await api("/auth/google", {idToken: r.credential}); token = a.token; localStorage.setItem("momentum_token", token); show(); }
+          catch (e) { $("#msg").textContent = e.message; } }});
+        google.accounts.id.renderButton($("#gbtn"), {theme: "outline", size: "large"}); } }, 100);
+    }
+  }
+  show();
+};
+</script>
+</body>
+</html>
