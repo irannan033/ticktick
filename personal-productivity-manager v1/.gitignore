@@ -1,0 +1,24 @@
+# Android / Gradle
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+captures/
+*.apk
+*.aab
+*.jks
+*.keystore
+google-services.json
+
+# Secrets & environment
+.env
+.env.*
+!.env.example
+
+# Backend
+__pycache__/
+node_modules/
+.venv/
+
+.DS_Store

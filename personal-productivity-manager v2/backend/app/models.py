@@ -1,0 +1,110 @@
+"""SQLAlchemy models. Times are epoch milliseconds (UTC) to match the Android client exactly.
+Primary keys are client-generated UUID strings so offline-created rows never collide."""
+import uuid
+
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from .db import Base
+
+
+def new_id() -> str:
+    return str(uuid.uuid4())
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    google_sub: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    # WhatsApp: digits only, international format without '+', e.g. 8801712345678
+    whatsapp_number: Mapped[str | None] = mapped_column(String(20), unique=True, nullable=True)
+    whatsapp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    morning_time: Mapped[str] = mapped_column(String(5), default="08:00")
+    evening_time: Mapped[str] = mapped_column(String(5), default="23:00")
+    followup_hours: Mapped[int] = mapped_column(Integer, default=2)
+    # conversation state
+    last_list: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of task ids; "1" = index 0
+    pending_action: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON awaiting YES/NO
+    last_inbound_at: Mapped[int] = mapped_column(BigInteger, default=0)  # 24h customer-service window
+    # scheduler markers
+    last_morning_date: Mapped[str] = mapped_column(String(10), default="")
+    last_evening_date: Mapped[str] = mapped_column(String(10), default="")
+    last_followup_at: Mapped[int] = mapped_column(BigInteger, default=0)
+    wa_fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class CategoryRow(Base):
+    __tablename__ = "categories"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    color_argb: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[int] = mapped_column(BigInteger, default=0)
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    server_updated_at: Mapped[int] = mapped_column(BigInteger, default=0, index=True)
+
+
+class TaskRow(Base):
+    __tablename__ = "tasks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    description: Mapped[str] = mapped_column(Text, default="")
+    priority: Mapped[str] = mapped_column(String(10), default="NONE")
+    important: Mapped[bool] = mapped_column(Boolean, default=False)
+    urgent: Mapped[bool] = mapped_column(Boolean, default=False)
+    category_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    start_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    due_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reminder_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    estimated_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(12), default="UPCOMING")  # OVERDUE is derived, never stored
+    completed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    postpone_count: Mapped[int] = mapped_column(Integer, default=0)
+    recurrence: Mapped[str | None] = mapped_column(String(10), nullable=True)  # DAILY | WEEKLY | MONTHLY
+    created_at: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[int] = mapped_column(BigInteger, default=0)  # client clock; last-write-wins key
+    deleted_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # tombstone
+    server_updated_at: Mapped[int] = mapped_column(BigInteger, default=0)  # server clock; sync cursor
+    __table_args__ = (Index("ix_tasks_user_due", "user_id", "due_at"), Index("ix_tasks_user_sync", "user_id", "server_updated_at"))
+
+
+class SessionRow(Base):
+    __tablename__ = "pomodoro_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    planned_minutes: Mapped[int] = mapped_column(Integer)
+    completed_seconds: Mapped[int] = mapped_column(Integer)
+    started_at: Mapped[int] = mapped_column(BigInteger)
+    ended_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(12))
+    server_updated_at: Mapped[int] = mapped_column(BigInteger, default=0, index=True)
+
+
+class ActivityRow(Base):
+    """Task history. Written server-side for changes made through WhatsApp."""
+    __tablename__ = "task_activity"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    task_id: Mapped[str] = mapped_column(String(36), index=True)
+    action: Mapped[str] = mapped_column(String(40))
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[int] = mapped_column(BigInteger)
+
+
+class WhatsAppMessage(Base):
+    __tablename__ = "whatsapp_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    direction: Mapped[str] = mapped_column(String(3))  # IN | OUT
+    content: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(12), default="queued")  # queued/sent/delivered/read/failed/received
+    # UNIQUE => a retried webhook delivery of the same message is processed exactly once
+    wa_message_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    timestamp: Mapped[int] = mapped_column(BigInteger, default=0)

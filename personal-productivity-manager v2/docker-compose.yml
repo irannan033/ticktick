@@ -1,0 +1,21 @@
+# Local/VPS deployment: API + PostgreSQL.  Put secrets in a .env file next to this file (see .env.example).
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: momentum
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: momentum
+    volumes: [pgdata:/var/lib/postgresql/data]
+    restart: unless-stopped
+  api:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://momentum:${POSTGRES_PASSWORD}@db:5432/momentum
+      ENABLE_SCHEDULER: "true"   # run exactly ONE api replica, otherwise WhatsApp messages are sent twice
+    depends_on: [db]
+    ports: ["8000:8000"]
+    restart: unless-stopped
+volumes:
+  pgdata:
