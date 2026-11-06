@@ -1,0 +1,105 @@
+package com.ppm.momentum.export
+
+import com.ppm.momentum.data.CategoryEntity
+import com.ppm.momentum.data.PomodoroEntity
+import com.ppm.momentum.data.TaskEntity
+import com.ppm.momentum.domain.Timeliness
+import com.ppm.momentum.domain.effectiveStatus
+import com.ppm.momentum.domain.timeliness
+import com.ppm.momentum.util.formatExport
+import java.io.OutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
+val EXPORT_HEADER = listOf(
+    "Title", "Description", "Priority", "Importance", "Urgency", "List", "Start", "Deadline", "Reminder",
+    "Status", "Completed at", "On time / Late", "Postponed (times)", "Pomodoro sessions", "Focus minutes",
+)
+
+fun exportRows(tasks: List<TaskEntity>, cats: List<CategoryEntity>, sessions: List<PomodoroEntity>, now: Long): List<List<String>> {
+    val categoriesById = cats.associateBy { it.id }
+    val sessionsByTaskId = sessions.groupBy { it.taskId }
+    return tasks.map { t ->
+        val mine = sessionsByTaskId[t.id].orEmpty()
+        val categoryName = categoriesById[t.categoryId]?.name.orEmpty()
+        listOf(
+            t.title, t.description, t.priority.label,
+            if (t.important) "Important" else "Not important",
+            if (t.urgent) "Urgent" else "Not urgent",
+            categoryName,
+            formatExport(t.startAt), formatExport(t.dueAt), formatExport(t.reminderAt),
+            t.effectiveStatus(now).label, formatExport(t.completedAt),
+            when (t.timeliness()) { Timeliness.ON_TIME -> "On time"; Timeliness.LATE -> "Late"; else -> "" },
+            t.postponeCount.toString(), mine.size.toString(), (mine.sumOf { it.completedSeconds } / 60).toString(),
+        )
+    }
+}
+
+fun csvEscape(v: String): String =
+    if (v.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + v.replace("\"", "\"\"") + "\"" else v
+
+/** UTF-8 with BOM so Excel detects the encoding. */
+fun writeCsv(out: OutputStream, rows: List<List<String>>) {
+    out.write(byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()))
+    val w = out.bufferedWriter(Charsets.UTF_8)
+    rows.forEach { w.write(it.joinToString(",") { c -> csvEscape(c) }); w.write("\r\n") }
+    w.flush()
+}
+
+private fun xmlEscape(s: String): String {
+    val b = StringBuilder()
+    for (ch in s) when {
+        ch == '&' -> b.append("&amp;"); ch == '<' -> b.append("&lt;"); ch == '>' -> b.append("&gt;")
+        ch == '"' -> b.append("&quot;")
+        ch.code < 32 && ch != '\n' && ch != '\t' -> {}
+        else -> b.append(ch)
+    }
+    return b.toString()
+}
+
+private fun colName(i: Int): String {
+    var n = i; val sb = StringBuilder()
+    do { sb.insert(0, 'A' + n % 26); n = n / 26 - 1 } while (n >= 0)
+    return sb.toString()
+}
+
+/** Minimal, dependency-free .xlsx (one sheet, inline strings). */
+fun writeXlsx(out: OutputStream, sheetName: String, rows: List<List<String>>) {
+    ZipOutputStream(out).use { z ->
+        fun entry(name: String, content: String) {
+            z.putNextEntry(ZipEntry(name)); z.write(content.toByteArray(Charsets.UTF_8)); z.closeEntry()
+        }
+        val xml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        entry("[Content_Types].xml", xml +
+            "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+            "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
+            "<Default Extension=\"xml\" ContentType=\"application/xml\"/>" +
+            "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>" +
+            "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" +
+            "</Types>")
+        entry("_rels/.rels", xml +
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>" +
+            "</Relationships>")
+        entry("xl/workbook.xml", xml +
+            "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
+            "<sheets><sheet name=\"" + xmlEscape(sheetName.take(31)) + "\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>")
+        entry("xl/_rels/workbook.xml.rels", xml +
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>" +
+            "</Relationships>")
+        val sb = StringBuilder(xml)
+        sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>")
+        rows.forEachIndexed { r, row ->
+            sb.append("<row r=\"").append(r + 1).append("\">")
+            row.forEachIndexed { c, v ->
+                sb.append("<c r=\"").append(colName(c)).append(r + 1).append("\" t=\"inlineStr\"><is><t xml:space=\"preserve\">")
+                    .append(xmlEscape(v)).append("</t></is></c>")
+            }
+            sb.append("</row>")
+        }
+        sb.append("</sheetData></worksheet>")
+        entry("xl/worksheets/sheet1.xml", sb.toString())
+    }
+}
+
